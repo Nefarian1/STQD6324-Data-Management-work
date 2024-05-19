@@ -1,0 +1,243 @@
+在puTTY的文件夹位置放一个官网下的pscp.exe（Put pscp.exe from the official website in the folder location of puTTY）
+win+R cmd 
+
+C:\ProgramData\Microsoft\Windows\Start Menu\Programs\PuTTY (64-bit)
+
+cd C:\ProgramData\Microsoft\Windows\Start Menu\Programs\PuTTY (64-bit)
+
+pscp -P 2222 "C:\Users\PC 15\Desktop\2003.csv" maria_dev@127.0.0.1:2003.csv
+password is : maria_dev
+
+My own file location：
+pscp -P 2222 "E:\HDP\files\2006.csv" maria_dev@127.0.0.1:2006.csv
+
+
+puTTY：
+hadoop fs -mkdir ml-100k
+ls
+hadoop fs -copyFromLocal 2006.csv ml-100k/2006.csv
+
+An example of intercepting the first 100,000 lines, which is not used, is shown here：
+head -n 100000 2006.csv > t_2006.csv
+
+Upload：
+hadoop fs -copyFromLocal t_2006.csv ml-100k/t_2006.csv
+ls
+
+Ambari Hive View
+Upload from HDFS
+
+path：
+/user/maria_dev/ml-100k/2006.csv
+
+row：
+Year,Month,DayofMonth,DayOfWeek,DepTime,
+CRSDepTime,ArrTime,CRSArrTime,UniqueCarrier,FlightNum,
+TailNum,ActualElapsedTime,CRSElapsedTime,AirTime,ArrDelay,
+DepDelay,Origin,Dest,Distance,TaxiIn,
+TaxiOut,Cancelled,CancellationCode,Diverted,CarrierDelay,
+WeatherDelay,NASDelay,SecurityDelay,LateAircraftDelay
+
+#pig
+-- 我用的是pig， 因为hive views在文件导入的过程出现问题，可能是不支持太大的文件（权限问题）
+-- I use Pig because Hive Views has problems importing files. It may be that it does not support files that are too large (permission issue).
+
+-- a 找出最优的航班延误时间段 Find the optimal flight delay time period
+flights = LOAD '/user/maria_dev/ml-100k/2006.csv' 
+    USING PigStorage(',')
+    AS (Year:int, Month:int, DayofMonth:int, DayOfWeek:int, DepTime:chararray, CRSDepTime:int, 
+        ArrTime:chararray, CRSArrTime:int, UniqueCarrier:chararray, FlightNum:int, TailNum:chararray, 
+        ActualElapsedTime:int, CRSElapsedTime:int, AirTime:int, ArrDelay:int, DepDelay:int, 
+        Origin:chararray, Dest:chararray, Distance:int, TaxiIn:int, TaxiOut:int, 
+        Cancelled:int, CancellationCode:chararray, Diverted:int, 
+        CarrierDelay:int, WeatherDelay:int, NASDelay:int, SecurityDelay:int, LateAircraftDelay:int);
+
+-- 过滤掉取消的航班 Filter out cancelled flights
+flights_filtered = FILTER flights BY Cancelled == 0;
+
+-- 提取小时数并转换为整数，忽略非数字DepTime Extract the hours and convert to integer, ignoring non-numeric DepTime
+valid_flights = FILTER flights_filtered BY (DepTime matches '\\d+');
+flights_with_hour = FOREACH valid_flights GENERATE 
+    (int)(SUBSTRING(DepTime, 0, 2)) AS Hour, 
+    ArrDelay;
+
+-- 按时间分组计算平均延误 Calculate average delay by time group
+group_by_hour = GROUP flights_with_hour BY Hour;
+avg_delay_by_hour = FOREACH group_by_hour GENERATE 
+    group AS Hour, 
+    AVG(flights_with_hour.ArrDelay) AS AvgArrDelay;
+
+-- 按星期几分组计算平均延误 Average delays by day of the week
+group_by_dow = GROUP flights_filtered BY DayOfWeek;
+avg_delay_by_dow = FOREACH group_by_dow GENERATE 
+    group AS DayOfWeek, 
+    AVG(flights_filtered.ArrDelay) AS AvgArrDelay;
+
+-- 按月份分组计算平均延误 Average delays by month
+group_by_month = GROUP flights_filtered BY Month;
+avg_delay_by_month = FOREACH group_by_month GENERATE 
+    group AS Month, 
+    AVG(flights_filtered.ArrDelay) AS AvgArrDelay;
+
+-- 将结果存储到HDFS Store the results in HDFS
+STORE avg_delay_by_hour INTO '/user/maria_dev/ml-100k/output_avg_delay_by_hour' 
+    USING PigStorage(',');
+STORE avg_delay_by_dow INTO '/user/maria_dev/ml-100k/output_avg_delay_by_dow' 
+    USING PigStorage(',');
+STORE avg_delay_by_month INTO '/user/maria_dev/ml-100k/output_avg_delay_by_month' 
+    USING PigStorage(',');
+
+
+
+
+
+-- b 找出航班延误的主要因素 Find out the main factors causing flight delays
+flights = LOAD '/user/maria_dev/ml-100k/2006.csv' 
+    USING PigStorage(',')
+    AS (Year:int, Month:int, DayofMonth:int, DayOfWeek:int, DepTime:chararray, CRSDepTime:int, 
+        ArrTime:chararray, CRSArrTime:int, UniqueCarrier:chararray, FlightNum:int, TailNum:chararray, 
+        ActualElapsedTime:int, CRSElapsedTime:int, AirTime:int, ArrDelay:int, DepDelay:int, 
+        Origin:chararray, Dest:chararray, Distance:int, TaxiIn:int, TaxiOut:int, 
+        Cancelled:int, CancellationCode:chararray, Diverted:int, 
+        CarrierDelay:int, WeatherDelay:int, NASDelay:int, SecurityDelay:int, LateAircraftDelay:int);
+
+-- 过滤掉取消的航班 Filter out cancelled flights
+flights_filtered = FILTER flights BY Cancelled == 0;
+
+-- 分别计数五种延误类型的延误时间大于零的记录数 Count the number of records with delay time greater than zero for each of the five delay types
+carrier_delay_count = FILTER flights_filtered BY CarrierDelay > 0;
+weather_delay_count = FILTER flights_filtered BY WeatherDelay > 0;
+nas_delay_count = FILTER flights_filtered BY NASDelay > 0;
+security_delay_count = FILTER flights_filtered BY SecurityDelay > 0;
+late_aircraft_delay_count = FILTER flights_filtered BY LateAircraftDelay > 0;
+
+-- 为每种延误类型添加标签 Add labels for each delay type
+carrier_delay_count_labeled = FOREACH carrier_delay_count GENERATE 'CarrierDelay' AS delay_type, 1 AS count;
+weather_delay_count_labeled = FOREACH weather_delay_count GENERATE 'WeatherDelay' AS delay_type, 1 AS count;
+nas_delay_count_labeled = FOREACH nas_delay_count GENERATE 'NASDelay' AS delay_type, 1 AS count;
+security_delay_count_labeled = FOREACH security_delay_count GENERATE 'SecurityDelay' AS delay_type, 1 AS count;
+late_aircraft_delay_count_labeled = FOREACH late_aircraft_delay_count GENERATE 'LateAircraftDelay' AS delay_type, 1 AS count;
+
+-- 合并所有延误类型的记录并计数 Merge all delay types and count them
+all_delay_count = UNION carrier_delay_count_labeled, weather_delay_count_labeled, nas_delay_count_labeled, security_delay_count_labeled, late_aircraft_delay_count_labeled;
+
+-- 按照延误类型进行分组并计数 Group and count by delay type
+grouped_delay_count = GROUP all_delay_count BY delay_type;
+
+-- 计算每种延误类型的总计数 Calculate the total count for each delay type
+total_delay_count = FOREACH grouped_delay_count GENERATE group AS delay_type, SUM(all_delay_count.count) AS total_count;
+
+-- 按照延误数量从大到小排序 Sort by delay number from largest to smallest
+sorted_delay_count = ORDER total_delay_count BY total_count DESC;
+
+-- 存储结果 Storing Results
+STORE sorted_delay_count INTO '/user/maria_dev/ml-100k/output_delay_counts_labeled' USING PigStorage(',');
+
+
+
+
+-- c 找出航班取消的主要因素 Find out the main reasons for flight cancellations
+flights = LOAD '/user/maria_dev/ml-100k/2006.csv' 
+    USING PigStorage(',')
+    AS (Year:int, Month:int, DayofMonth:int, DayOfWeek:int, DepTime:chararray, CRSDepTime:int, 
+        ArrTime:chararray, CRSArrTime:int, UniqueCarrier:chararray, FlightNum:int, TailNum:chararray, 
+        ActualElapsedTime:int, CRSElapsedTime:int, AirTime:int, ArrDelay:int, DepDelay:int, 
+        Origin:chararray, Dest:chararray, Distance:int, TaxiIn:int, TaxiOut:int, 
+        Cancelled:int, CancellationCode:chararray, Diverted:int, 
+        CarrierDelay:int, WeatherDelay:int, NASDelay:int, SecurityDelay:int, LateAircraftDelay:int);
+
+-- 过滤掉未取消的航班 Filter out non-cancelled flights
+cancelled_flights = FILTER flights BY Cancelled == 1;
+
+-- 统计每种取消原因的航班数量 Count the number of flights cancelled for each reason
+group_by_cancellation_code = GROUP cancelled_flights BY CancellationCode;
+count_by_cancellation_code = FOREACH group_by_cancellation_code GENERATE 
+    group AS CancellationCode, 
+    COUNT(cancelled_flights) AS CancellationCount;
+
+-- 存储结果 Storing Results
+STORE count_by_cancellation_code INTO '/user/maria_dev/ml-100k/output_cancellation_factors' USING PigStorage(',');
+
+
+
+
+
+-- d 找出经历最频繁和显著延误和取消的航班 
+-- Find out which flights experience the most frequent and significant delays and cancellations
+flights = LOAD '/user/maria_dev/ml-100k/2006.csv' 
+    USING PigStorage(',')
+    AS (Year:int, Month:int, DayofMonth:int, DayOfWeek:int, DepTime:chararray, CRSDepTime:int, 
+        ArrTime:chararray, CRSArrTime:int, UniqueCarrier:chararray, FlightNum:int, TailNum:chararray, 
+        ActualElapsedTime:int, CRSElapsedTime:int, AirTime:int, ArrDelay:int, DepDelay:int, 
+        Origin:chararray, Dest:chararray, Distance:int, TaxiIn:int, TaxiOut:int, 
+        Cancelled:int, CancellationCode:chararray, Diverted:int, 
+        CarrierDelay:int, WeatherDelay:int, NASDelay:int, SecurityDelay:int, LateAircraftDelay:int);
+
+-- 统计每个航班的延误和取消次数 Count the number of delays and cancellations for each flight
+group_by_flight = GROUP flights BY (UniqueCarrier, FlightNum);
+delay_and_cancellation_count = FOREACH group_by_flight {
+    delayed_flights = FILTER flights BY ArrDelay > 0;
+    cancelled_flights = FILTER flights BY Cancelled == 1;
+    GENERATE FLATTEN(group) AS (UniqueCarrier, FlightNum),
+        COUNT(delayed_flights) AS DelayCount,
+        COUNT(cancelled_flights) AS CancellationCount,
+        AVG(flights.ArrDelay) AS AvgArrDelay;
+}
+
+-- 找出延误最多的航班 Find the most delayed flights
+ordered_delayed_flights = ORDER delay_and_cancellation_count BY DelayCount DESC;
+most_delayed_flight = LIMIT ordered_delayed_flights 1;
+
+-- 找出取消最多的航班 Find the most cancelled flights
+ordered_cancelled_flights = ORDER delay_and_cancellation_count BY CancellationCount DESC;
+most_cancelled_flight = LIMIT ordered_cancelled_flights 1;
+
+-- 存储结果 Storing Results
+STORE most_delayed_flight INTO '/user/maria_dev/ml-100k/output_most_delayed_flight' USING PigStorage(',');
+STORE most_cancelled_flight INTO '/user/maria_dev/ml-100k/output_most_cancelled_flight' USING PigStorage(',');
+
+
+
+
+原理 principle
+在Ambari中运行上述Pig脚本：
+
+一，上传Pig脚本：将每个Pig脚本上传到HDFS，例如，/user/maria_dev/ml-100k/flight_analysis_1.pig，/user/maria_dev/ml-100k/flight_analysis_2.pig，等等。
+
+二，运行Pig脚本：
+打开Ambari Web界面。
+导航到“Pig”服务。
+创建一个新脚本或选择上传的脚本路径。
+运行脚本。
+
+
+
+脚本运行完成后，结果将存储在指定的HDFS路径下。去puTTY。
+改名。
+After the script is finished running, the results will be stored in the specified HDFS path. Go to puTTY.
+Rename.
+
+a
+hdfs dfs -cat /user/maria_dev/ml-100k/output_avg_delay_by_hour/a1
+hdfs dfs -cat /user/maria_dev/ml-100k/output_avg_delay_by_dow/a2
+hdfs dfs -cat /user/maria_dev/ml-100k/output_avg_delay_by_month/a3
+
+b
+hdfs dfs -cat /user/maria_dev/ml-100k/output_delay_counts_labeled/b
+
+c
+hdfs dfs -cat /user/maria_dev/ml-100k/output_cancellation_factors/c
+
+d
+hdfs dfs -cat /user/maria_dev/ml-100k/output_most_delayed_flight/d1
+hdfs dfs -cat /user/maria_dev/ml-100k/output_most_cancelled_flight/d2
+
+
+
+
+
+
+
+
+
+
