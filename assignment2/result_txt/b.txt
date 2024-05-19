@@ -1,0 +1,5 @@
+NASDelay,941866
+LateAircraftDelay,731324
+CarrierDelay,718349
+WeatherDelay,113743
+SecurityDelay,10673
