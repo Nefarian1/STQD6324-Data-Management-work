@@ -1,0 +1,112 @@
+mkdir pan 
+cd pan 
+ls
+mkdir ml-100k 
+cd ml-100k/
+wget http://media.sundog-soft.com/hadoop/ml-100k/u.data(u.item)
+ls
+check(u.data  & u.item)
+cd ..
+vi yourSQL.py 
+spark-submit yourSQL.py
+#####################################################
+from pyspark.sql import SparkSession
+from pyspark.sql import Row
+from pyspark.sql import functions
+def loadMovieNames():
+    movieNames = {}
+    with open("ml-100k/u.item") as f:
+        for line in f:
+            fields = line.split('|')
+            movieNames[int(fields[0])] = fields[1]
+        return movieNames
+
+def parseInput(line):
+    fields = line.split()
+    return Row(movieID = int(fields[1]), rating = float(fields[2]))
+
+if __name__ == "__main__":
+    #Create a SparkSession
+        spark = SparkSession.builder.appName("PopularMovies").getOrCreate()
+
+        #Load up our movie ID -> name dictionary
+        movieNames = loadMovieNames()
+
+        #get the raw data
+        lines = spark.sparkContext.textFile("hdfs:///user/maria_dev/ml-100k/u.data")
+        #
+        movies = lines.map(parseInput)
+        #
+        movieDataset = spark.createDataFrame(movies)
+
+        #
+        averageRatings = movieDataset.groupBy("movieID").avg("rating")
+
+        #
+        counts = movieDataset.groupBy("movieID").count()
+
+        #
+        averagesAndCounts = counts.join(averageRatings,"movieID")
+
+        #
+        topTen = averagesAndCounts.orderBy("avg(rating)").take(10)
+
+        #
+        for movie in topTen:
+            print (movieNames[movie[0]], movie[1], movie[2])
+
+        spark.stop()
+#################################################
+su root
+hadoop password->panzhangyu
+sudo yum install python-pip
+sudo pip install numpy==1.16
+vi yourSQL.py 
+copy code~~~~
+spark-submit yourSQL.py
+#################################################
+from pyspark.sql import SparkSession
+from pyspark.ml.recommendation import ALS
+from pyspark.sql import Row
+from pyspark.sql.functions import lit
+
+#
+def loadMovieNames():
+    movieNames = {}
+    with open("ml-100k/u.item") as f:
+        for line in f:
+            fields = line.split('|')
+            movieNames[int(fields[0])] = fields[1].decode('ascii', 'ignore')
+        return movieNames
+
+#
+def parseInput(line):
+    fields = line.value.split()
+    return Row(userID = int(fields[0]), movieID = int(fields[1]), rating = float(fields[2]))
+
+if __name__ == "__main__":
+    spark = SparkSession.builder.appName("MovieRecs").getOrCreate()
+    spark.conf.set("spark.sql.crossJoin.enabled", "true")
+    movieNames = loadMovieNames()
+    lines = spark.read.text("hdfs:///user/maria_dev/ml-100k/u.data").rdd
+    ratingsRDD = lines.map(parseInput)
+    ratings = spark.createDataFrame(ratingsRDD).cache()
+    als = ALS(maxIter=5, regParam=0.01, userCol="userID",itemCol="movieID",ratingCol="rating")
+    model = als.fit(ratings)
+
+    print("\nRatings for user ID 0:")
+    userRatings = ratings.filter("userID = 0")
+    for rating in userRatings.collect():
+        print movieNames[rating['movieID']], rating['rating']
+
+    print("\nTop 20 recommendations:")
+    ratingCounts = ratings.groupBy("movieID").count().filter("count > 100")
+    popularMovies = ratingCounts.select("movieID").withColumn('userID', lit(0))
+
+    recommendations = model.transform(popularMovies)
+    topRecommendations = recommendations.sort(recommendations.prediction.desc()).take(20)
+
+    for recommendation in topRecommendations:
+        print (movieNames[recommendation['movieID']], recommendation['prediction'])
+
+    spark.stop()
