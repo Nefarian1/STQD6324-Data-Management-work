@@ -1,0 +1,385 @@
+# PANZHANGYU P136922 Assignment4 STQD6324
+
+u.data     -- The full u data set, 100000 ratings by 943 users on 1682 items.
+              Each user has rated at least 20 movies.  Users and items are
+              numbered consecutively from 1.  The data is randomly
+              ordered. This is a tab separated list of 
+	         user id | item id | rating | timestamp. 
+              The time stamps are unix seconds since 1/1/1970 UTC   
+
+u.info     -- The number of users, items, and ratings in the u data set.
+
+u.item     -- Information about the items (movies); this is a tab separated
+              list of
+              movie id | movie title | release date | video release date |
+              IMDb URL | unknown | Action | Adventure | Animation |
+              Children's | Comedy | Crime | Documentary | Drama | Fantasy |
+              Film-Noir | Horror | Musical | Mystery | Romance | Sci-Fi |
+              Thriller | War | Western |
+              The last 19 fields are the genres, a 1 indicates the movie
+              is of that genre, a 0 indicates it is not; movies can be in
+              several genres at once.
+              The movie ids are the ones used in the u.data data set.
+
+u.genre    -- A list of the genres.
+
+u.user     -- Demographic information about the users; this is a tab
+              separated list of
+              user id | age | gender | occupation | zip code
+              The user ids are the ones used in the u.data data set.
+
+u.occupation -- A list of the occupations.
+
+#
+cd ml-100k/
+wget http://media.sundog-soft.com/hadoop/ml-100k/u.data
+wget http://media.sundog-soft.com/hadoop/ml-100k/u.info
+wget http://media.sundog-soft.com/hadoop/ml-100k/u.item
+wget http://media.sundog-soft.com/hadoop/ml-100k/u.genre
+wget http://media.sundog-soft.com/hadoop/ml-100k/u.user
+wget http://media.sundog-soft.com/hadoop/ml-100k/u.occupation
+ls
+
+cd ..
+
+su root
+# hadoop (password) -> panzhangyu
+sudo yum install python-pip
+sudo pip install numpy==1.16
+
+# ESC
+# :1,$d 清除 Clear
+# i 插入模式 Insert Mode
+
+
+######################################################## i 计算每部电影的平均评分
+######################################## i Calculate the average rating for each movie
+vi oneSQL.py
+#
+
+# -*- coding: utf-8 -*-
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+
+def parseRating(line):
+    fields = line.split('\t')
+    return (int(fields[0]), int(fields[1]), float(fields[2]), int(fields[3]))
+
+if __name__ == "__main__":
+    # Creating a SparkSession
+    spark = SparkSession.builder \
+        .appName("AverageMovieRatings") \
+        .getOrCreate()
+
+    # 读取数据 Reading Data
+    lines = spark.sparkContext.textFile("hdfs:///user/maria_dev/ml-100k/u.data")
+    
+    # 解析数据 Analytical data
+    ratings = lines.map(parseRating)
+    
+    # Convert to DataFrame
+    ratingsDF = ratings.toDF(["userID", "movieID", "rating", "timestamp"])
+    
+    # 计算每部电影的平均评分 Calculate the average rating for each movie
+    avgRatings = ratingsDF.groupBy("movieID").agg(F.avg("rating").alias("avg_rating"))
+    
+    # 
+    avgRatings.show(10)
+    
+    # 
+    spark.stop()
+
+
+#
+spark-submit oneSQL.py
+
++-------+------------------+
+|movieID|        avg_rating|
++-------+------------------+
+|    474| 4.252577319587629|
+|     29|2.6666666666666665|
+|     26| 3.452054794520548|
+|    964|3.3333333333333335|
+|   1677|               3.0|
+|     65|3.5391304347826087|
+|    191| 4.163043478260869|
+|   1224|2.6666666666666665|
+|    558|3.6714285714285713|
+|   1010|              3.25|
++-------+------------------+
+only showing top 10 rows
+
+
+######################################################## ii 找出至少评价了50部电影的用户及其最喜欢的电影类型
+################################# ii Find the users who have rated at least 50 movies and their favorite movie genres
+vi twoSQL.py
+#
+
+# -*- coding: utf-8 -*-
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import IntegerType
+
+if __name__ == "__main__":
+    # Creating a SparkSession
+    spark = SparkSession.builder \
+        .appName("TopTenMovies") \
+        .getOrCreate()
+
+    # 读取并解析电影评分数据 Read and parse movie ratings data
+    ratings = spark.read.csv("hdfs:///user/maria_dev/ml-100k/u.data", sep="\t")
+    # 指定列的数据类型为整数 Specifies that the data type of the column is an integer
+    ratings = ratings.withColumnRenamed("_c0", "userID") \
+                     .withColumnRenamed("_c1", "movieID") \
+                     .withColumnRenamed("_c2", "rating") \
+                     .withColumnRenamed("_c3", "timestamp")
+    ratings = ratings.select("movieID", ratings["rating"].cast(IntegerType()))
+
+    # 计算每部电影的平均评分并按降序排列 Calculate the average rating for each movie and sort them in descending order
+    average_ratings = ratings.groupBy("movieID").avg("rating")
+    top_ten_movies = average_ratings.orderBy(F.desc("avg(rating)")).limit(10)
+
+    #
+    top_ten_movies.show()
+
+    #
+    spark.stop()
+
+#
+spark-submit twoSQL.py
+
++-------+-----------+
+|movieID|avg(rating)|
++-------+-----------+
+|   1500|        5.0|
+|   1536|        5.0|
+|   1201|        5.0|
+|   1122|        5.0|
+|   1293|        5.0|
+|   1599|        5.0|
+|   1467|        5.0|
+|   1653|        5.0|
+|   1189|        5.0|
+|    814|        5.0|
++-------+-----------+
+
+
+######################################################## iii 找出至少评价了50部电影的用户及其最喜欢的电影类型
+################################# iii Find the users who have rated at least 50 movies and their favorite movie genres
+vi threeSQL.py
+#
+
+# -*- coding: utf-8 -*-
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+
+def parseUserRating(line):
+    fields = line.split('\t')
+    return (int(fields[0]), int(fields[1]), float(fields[2]))
+
+def parseMovie(line):
+    fields = line.split('|')
+    genres = [int(genre) for genre in fields[5:]]
+    return (int(fields[0]), genres)
+
+if __name__ == "__main__":
+    # 
+    spark = SparkSession.builder \
+        .appName("FrequentRaters") \
+        .getOrCreate()
+
+    # 
+    lines = spark.sparkContext.textFile("hdfs:///user/maria_dev/ml-100k/u.data")
+    userRatings = lines.map(parseUserRating)
+    userRatingsDF = userRatings.toDF(["userID", "movieID", "rating"])
+
+    # 
+    movieLines = spark.sparkContext.textFile("hdfs:///user/maria_dev/ml-100k/u.item")
+    movies = movieLines.map(parseMovie)
+    moviesDF = movies.toDF(["movieID", "genres"])
+
+    # 
+    moviesDF = moviesDF.select("movieID", F.explode("genres").alias("genreIndex"))
+
+    # 
+    genres = ["unknown", "Action", "Adventure", "Animation", "Children's", "Comedy", "Crime",
+              "Documentary", "Drama", "Fantasy", "Film-Noir", "Horror", "Musical", "Mystery",
+              "Romance", "Sci-Fi", "Thriller", "War", "Western"]
+
+    genreMapping = {i: genres[i] for i in range(len(genres))}
+
+    # 筛选出至少对 50 部电影进行过评分的用户 Filter for users who have rated at least 50 movies
+    userCounts = userRatingsDF.groupBy("userID").count().filter("count >= 50").select("userID")
+
+    # 找出这些用户最喜欢的电影类型 Find out the most popular movie genres for these users
+    userRatingsDF.createOrReplaceTempView("userRatings")
+    moviesDF.createOrReplaceTempView("movies")
+    userCounts.createOrReplaceTempView("activeUsers")
+
+    frequentRaters = spark.sql("""
+        SELECT u.userID, m.genreIndex, COUNT(*) AS genre_count
+        FROM userRatings u
+        JOIN activeUsers a ON u.userID = a.userID
+        JOIN movies m ON u.movieID = m.movieID
+        WHERE m.genreIndex = 1
+        GROUP BY u.userID, m.genreIndex
+        ORDER BY genre_count DESC
+    """)
+
+    # 将电影类型索引映射为类型名称 Map movie genre index to genre name
+    frequentRaters = frequentRaters.withColumn("genre", F.udf(lambda index: genreMapping[index])(frequentRaters["genreIndex"]))
+
+    # 
+    frequentRaters.select("userID", "genre", "genre_count").show(10)
+
+    # 
+    spark.stop()
+
+#
+spark-submit threeSQL.py
+
++------+------+-----------+
+|userID| genre|genre_count|
++------+------+-----------+
+|   405|Action|       1342|
+|    13|Action|       1271|
+|   655|Action|       1210|
+|   276|Action|       1105|
+|   450|Action|       1078|
+|   416|Action|       1015|
+|   303|Action|        996|
+|   393|Action|        935|
+|   537|Action|        933|
+|   234|Action|        932|
++------+------+-----------+
+only showing top 10 rows
+
+
+######################################################## iv 找出所有小于20岁的用户
+################################################# iv Find all users under 20 years old
+vi fourSQL.py
+#
+
+# -*- coding: utf-8 -*-
+from pyspark.sql import SparkSession
+from pyspark.sql import Row
+
+def parseUser(line):
+    fields = line.split('|')
+    return Row(userID=int(fields[0]), age=float(fields[1]), gender=fields[2], occupation=fields[3], zip=fields[4])
+
+if __name__ == "__main__":
+    # 创建一个SparkSession
+    spark = SparkSession.builder \
+    .appName("UsersUnder20") \
+    .getOrCreate()
+    
+    # 
+    lines = spark.sparkContext.textFile("hdfs:///user/maria_dev/ml-100k/u.user")
+    
+    # 
+    users = lines.map(parseUser)
+    
+    # DataFrame
+    userDataset = spark.createDataFrame(users)
+    
+    # 找出所有小于20岁的用户 Find all users who are younger than 20 years old
+    usersUnder20 = userDataset.filter(userDataset.age < 20)
+    
+    # 
+    usersUnder20.show(10)
+    
+    # 
+    spark.stop()
+
+#
+spark-submit fourSQL.py
+
++----+------+-------------+------+-----+
+| age|gender|   occupation|userID|  zip|
++----+------+-------------+------+-----+
+| 7.0|     M|      student|    30|55436|
+|19.0|     F|      student|    36|93117|
+|18.0|     F|      student|    52|55105|
+|16.0|     M|         none|    57|84010|
+|17.0|     M|      student|    67|60402|
+|19.0|     M|      student|    68|22904|
+|15.0|     M|      student|   101|05146|
+|19.0|     M|      student|   110|77840|
+|13.0|     M|        other|   142|48118|
+|15.0|     M|entertainment|   179|20755|
++----+------+-------------+------+-----+
+only showing top 10 rows
+
+
+######################################################## v 找出职业是“scientist”，年龄在30到40岁之间的用户
+################################## v Find users whose occupation is "scientist" and whose age is between 30 and 40
+vi fiveSQL.py
+#
+
+# -*- coding: utf-8 -*-
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from collections import namedtuple
+
+# 定义命名元组 Defining a named tuple
+User = namedtuple("User", ["userID", "age", "gender", "occupation", "zip"])
+
+def parseUser(line):
+    try:
+        fields = line.split('|')
+        return User(userID=int(fields[0]), age=int(fields[1]), gender=fields[2], occupation=fields[3], zip=fields[4])
+    except:
+        # If parsing fails, None is returned.       如果解析失败，则返回None 
+        return None
+
+if __name__ == "__main__":
+    # 
+    spark = SparkSession.builder \
+        .appName("ScientistUsers") \
+        .getOrCreate()
+
+    # 读取并解析用户数据 Read and parse user data
+    lines = spark.sparkContext.textFile("hdfs:///user/maria_dev/ml-100k/u.user")
+    users = lines.map(parseUser).filter(lambda x: x is not None)
+    # 定义列名 Define column names
+    columns = ["userID", "age", "gender", "occupation", "zip"]
+    # 将命名元组转换为DataFrame
+    usersDF = users.toDF(columns)
+    
+    # 找出职业是“scientist”，年龄在30到40岁之间的用户 Find users whose occupation is "scientist" and whose age is between 30 and 40
+    scientists = usersDF.filter((usersDF.occupation == "scientist") & (usersDF.age.between(30, 40)))
+    
+    # 
+    scientists.show(10)
+    
+    # 
+    spark.stop()
+
+#
+spark-submit fiveSQL.py
+
++------+---+------+----------+-----+
+|userID|age|gender|occupation|  zip|
++------+---+------+----------+-----+
+|    40| 38|     M| scientist|27514|
+|    71| 39|     M| scientist|98034|
+|    74| 39|     M| scientist|T8H1N|
+|   107| 39|     M| scientist|60466|
+|   183| 33|     M| scientist|27708|
+|   272| 33|     M| scientist|53706|
+|   309| 40|     M| scientist|70802|
+|   337| 37|     M| scientist|10522|
+|   430| 38|     M| scientist|98199|
+|   538| 31|     M| scientist|21010|
++------+---+------+----------+-----+
+only showing top 10 rows
+
+
+########################################################
+
+
+
+
+
+
